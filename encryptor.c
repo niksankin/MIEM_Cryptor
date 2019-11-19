@@ -43,9 +43,6 @@ int main(int argc, char* argv[])
 	Elf *e;
 	Elf_Scn *scn = NULL;
 	Elf_Data *data = NULL;
-	GElf_Ehdr ehdr;
-	GElf_Phdr phdr;
-	GElf_Shdr shdr;
 	int ret;
 
 	fd = open(argv[1], O_RDWR);
@@ -57,16 +54,16 @@ int main(int argc, char* argv[])
 
 	e = elf_begin(fd, ELF_C_RDWR, NULL);
 
-	elf_flagelf(e, ELF_C_SET, ELF_F_DIRTY);
+	elf_flagelf(e, ELF_C_SET, ELF_F_LAYOUT);
 
 	if (!e)
 		printf(" elf_begin () failed: %s.", elf_errmsg(-1));
 
-	gelf_getehdr(e, &ehdr);
+	Elf64_Ehdr *ehdr = elf64_getehdr(e);
 	
 	//добавляем имя новой секции в таблицу имен секций
 
-	scn = elf_getscn(e, ehdr.e_shstrndx);
+	scn = elf_getscn(e, ehdr->e_shstrndx);
 
 	char *name = ".STUB";
 
@@ -78,7 +75,6 @@ int main(int argc, char* argv[])
 		goto exit;
 	}
 
-	//как будто бы за счет какой-то секции все неправильно выделяется...
 	int new_table_size = data->d_size + strlen(name) + 1;
 	int new_string_index = data->d_size;
 
@@ -89,36 +85,55 @@ int main(int argc, char* argv[])
 	strcpy(new_table + new_string_index, name);
 
 	data->d_size = new_table_size;
-	
-	//memcpy(data->d_buf, new_table, new_table_size);
 
 	data->d_buf = new_table;
 
+	Elf64_Shdr *shdr = elf64_getshdr(scn);
+
+	shdr->sh_size = new_table_size;
+
+	(void)elf_flagshdr(scn, ELF_C_SET, ELF_F_DIRTY);
+	(void)elf_flagscn(scn, ELF_C_SET, ELF_F_DIRTY);
+	(void)elf_flagdata(data, ELF_C_SET, ELF_F_DIRTY);
+
 	//добавляем саму секцию
 
-	/*scn = elf_newscn(e);
+	scn = elf_newscn(e);
 
 	data = elf_newdata(scn);
 
-	unsigned char *buf = {0xc3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+	unsigned char buf[] = {0xc3, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
 
 	data->d_align = 1;
+	data->d_off = 0LL;
 	data->d_buf = buf;
-	data->d_off = 0;
-	data->d_size = sizeof(buf);
 	data->d_type = ELF_T_BYTE;
+	data->d_size = sizeof(buf);
 	data->d_version = EV_CURRENT;
 
-	gelf_getshdr(scn, &shdr);
+	shdr = elf64_getshdr(scn);
+	shdr->sh_name = new_string_index;
+	shdr->sh_type = SHT_PROGBITS;
+	shdr->sh_flags = SHF_EXECINSTR | SHF_ALLOC;
+	shdr->sh_size = sizeof(buf);
+	
+	//добавляем в существующий загружаемый сегмент
+	//TODO: автоматическое вычисление нужного размера для сегмента
 
-	shdr.sh_name = new_string_index;
-	shdr.sh_type = SHT_PROGBITS;
-	shdr.sh_flags = SHF_EXECINSTR | SHF_ALLOC;
-	shdr.sh_entsize = 0;
-	shdr.sh_size = sizeof(buf);
-	shdr.sh_addralign = 16;
-	shdr.sh_offset = 15071;
-	shdr.sh_addr = ;*/
+	Elf64_Phdr *phdr = elf64_getphdr(e);
+
+	for (int i = 0; i < ehdr->e_phnum; ++i)
+	{
+		if (phdr[i].p_type == PT_LOAD) {
+			shdr->sh_addr = phdr[i].p_vaddr + phdr[i].p_memsz;
+			shdr->sh_offset = phdr[i].p_paddr + phdr[i].p_filesz;
+
+			phdr[i].p_filesz += shdr->sh_size;
+			phdr[i].p_memsz += shdr->sh_size;
+
+			break;
+		}
+	}
 
 	ret = elf_update(e, ELF_C_NULL);
 
@@ -129,6 +144,13 @@ int main(int argc, char* argv[])
 	}
 
 	//printf("Add section %s\n", elf_strptr(e, ehdr.e_shstrndx, shdr.sh_name));
+
+	(void)elf_flagshdr(scn, ELF_C_SET, ELF_F_DIRTY);
+	(void)elf_flagscn(scn, ELF_C_SET, ELF_F_DIRTY);
+	(void)elf_flagdata(data, ELF_C_SET, ELF_F_DIRTY);
+	(void)elf_flagehdr(e, ELF_C_SET, ELF_F_DIRTY);
+	(void)elf_flagphdr(e, ELF_C_SET, ELF_F_DIRTY);
+	(void)elf_flagelf(e, ELF_C_SET, ELF_F_DIRTY);
 
 	ret = elf_update(e, ELF_C_WRITE);
 
