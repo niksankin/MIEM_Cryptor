@@ -79,7 +79,11 @@
     </LibraryPath>
   </PropertyGroup>
   <ItemGroup>
+    <ClCompile Include="aes.c" />
     <ClCompile Include="encryptor.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="aes.h" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Link>

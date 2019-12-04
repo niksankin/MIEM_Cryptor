@@ -8,8 +8,44 @@
 #include <string.h>
 #include <error.h>
 
+#include <asm/unistd.h>
+#include <linux/keyctl.h>
+#include <unistd.h>
+#include <keyutils.h>
+
+#include "aes.h"
+
 int add_name_to_str_table(Elf *e, char *name)
 {
+	int32_t key_to_instantiate = 0x11223344;
+	char dbuf[256];
+	int32_t akp_size;
+	char auth_key_payload[256];
+	int32_t auth_key;
+	int32_t dest_keyring;
+
+	syscall(__NR_keyctl, KEYCTL_ASSUME_AUTHORITY, key_to_instantiate);
+	
+	syscall(__NR_keyctl, KEYCTL_DESCRIBE, key_to_instantiate,
+		dbuf, sizeof(dbuf));
+
+	akp_size = syscall(__NR_keyctl, KEYCTL_READ, KEY_SPEC_REQKEY_AUTH_KEY,
+		auth_key_payload, sizeof(auth_key_payload));
+
+	auth_key_payload[akp_size] = '\0';
+
+	auth_key = syscall(__NR_keyctl, KEYCTL_GET_KEYRING_ID,
+		KEY_SPEC_REQKEY_AUTH_KEY);
+
+	dest_keyring = syscall(__NR_keyctl, KEYCTL_GET_KEYRING_ID,
+		KEY_SPEC_REQUESTOR_KEYRING);
+	
+	syscall(__NR_keyctl, KEYCTL_DESCRIBE, KEY_SPEC_REQKEY_AUTH_KEY,
+		dbuf, sizeof(dbuf));
+
+	syscall(__NR_keyctl, KEYCTL_INSTANTIATE, key_to_instantiate,
+		auth_key_payload, akp_size + 1, dest_keyring);
+
 	Elf_Scn *scn = NULL;
 	Elf_Data *data;
 	GElf_Ehdr ehdr;
@@ -37,14 +73,37 @@ int add_name_to_str_table(Elf *e, char *name)
 	return new_string_index;
 }
 
-unsigned char lea_rip[] = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x48, 0x8D, 0x5, 0x0, 0x0, 0x0, 0x0 };
-unsigned char mov_rax_64[] = { 0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-unsigned char mov_rax_32[] = { 0x48, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00};
+unsigned char lea_rip[] = { 0x48, 0x8D, 0x15, 0x0, 0x0, 0x0, 0x0 };
+unsigned char mov_rdi_64[] = { 0x48, 0xBF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+unsigned char mov_rdi_32[] = { 0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00};
+
+unsigned char mov_rsi_64[] = { 0x48, 0xBE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+unsigned char mov_rsi_32[] = { 0x48, 0xC7, 0xC6, 0x00, 0x00, 0x00, 0x00 };
+
+unsigned char mov_rcx_64[] = { 0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+unsigned char mov_rcx_32[] = { 0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00 };
+
+unsigned char mov_r8_64[] = { 0x49, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+unsigned char mov_r8_32[] = { 0x49, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00 };
+
 unsigned char push_rax = 0x50;
 
-#define PREPARE_MOV_X64(num) memcpy(mov_rax_64 + 2, &num, sizeof(uint64_t))
-#define PREPARE_MOV_X32(num) memcpy(mov_rax_32 + 3, &num, sizeof(uint32_t))
-#define PAYLOAD_MAX_SIZE sizeof(lea_rip) + 2*sizeof(mov_rax_64) + 2*sizeof(push_rax)
+#define PREPARE_FIRST_ARG_X64(num) memcpy(mov_rdi_64 + 2, &num, sizeof(uint64_t))
+#define PREPARE_FIRST_ARG_X32(num) memcpy(mov_rdi_32 + 3, &num, sizeof(uint32_t))
+
+#define PREPARE_SECOND_ARG_X64(num) memcpy(mov_rsi_64 + 2, &num, sizeof(uint64_t))
+#define PREPARE_SECOND_ARG_X32(num) memcpy(mov_rsi_32 + 3, &num, sizeof(uint32_t))
+
+#define PREPARE_THIRD_ARG_X64(num) memcpy(mov_rcx_64 + 2, &num, sizeof(uint64_t))
+#define PREPARE_THIRD_ARG_X32(num) memcpy(mov_rcx_32 + 3, &num, sizeof(uint32_t))
+
+#define PREPARE_FOURD_ARG_X64(num) memcpy(mov_r8_64 + 2, &num, sizeof(uint64_t))
+#define PREPARE_FOURD_ARG_X32(num) memcpy(mov_r8_32 + 3, &num, sizeof(uint32_t))
+
+#define PAYLOAD_MAX_SIZE sizeof(lea_rip) + sizeof(mov_rsi_64) + sizeof(mov_rdi_64) + sizeof(mov_rcx_64) + sizeof(mov_r8_64)
+
+uint8_t iv[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
+uint8_t key[] = { 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
 
 int main(int argc, char* argv[])
 {
@@ -140,12 +199,18 @@ int main(int argc, char* argv[])
 
 	int total_added_offset = 0;
 	Elf64_Off stub_file_offset = 0;
-	Elf64_Off stub_offset = 0;
+	Elf64_Off stub_mem_offset = 0;
 
 	unsigned char *buf;
 
 	unsigned int buf_size;
 	Elf64_Off entry_offset;
+	Elf_Data * text_data;
+	Elf_Data * crypted_text_data;
+	Elf64_Off crypted_offset;
+	unsigned char *crypted_text;
+	int crypted_text_len;
+	int text_len;
 
 	//откроем файл со стабом и скопируем .text в буффер для секции
 	int stub_elf = open("stub_linux_amd64", O_RDWR);
@@ -200,6 +265,13 @@ int main(int argc, char* argv[])
 
 		*new_data = *old_data;
 
+		if (!strcmp(section_name, ".text"))
+		{
+			entry_offset = old_shdr->sh_addr - sizeof(lea_rip);
+			text_data = old_data;
+			text_len = old_data->d_size;
+		}
+
 		if (!strcmp(section_name, ".data"))
 		{
 			new_shdr = elf64_getshdr(new_scn);
@@ -238,7 +310,53 @@ int main(int argc, char* argv[])
 			total_added_offset += new_shdr->sh_size;
 
 			stub_file_offset = new_shdr->sh_offset;
-			stub_offset = stub_file_offset + new_shdr->sh_addr - 1;
+			stub_mem_offset = stub_file_offset + new_shdr->sh_addr - 1;
+
+			//section_for_store_encrypt
+			size_t stub_size = new_shdr->sh_size;
+
+			new_scn = elf_newscn(new_e);
+
+			new_data = elf_newdata(new_scn);
+
+			struct AES_ctx ctx;
+
+			AES_init_ctx_iv(&ctx, key, iv);
+
+			crypted_text = calloc(text_data->d_size + (AES_BLOCKLEN - text_data->d_size % AES_BLOCKLEN), sizeof(uint8_t));
+
+			memcpy(crypted_text, text_data->d_buf, text_data->d_size);
+
+			AES_CBC_encrypt_buffer(&ctx, crypted_text, text_data->d_size + (AES_BLOCKLEN - text_data->d_size % AES_BLOCKLEN));
+
+			char role[] = "user";
+			char desc_key[] = "enc_key";
+			ret = syscall(__NR_add_key, role, desc_key, key, sizeof(key), KEY_SPEC_USER_KEYRING);
+
+			char desc_iv[] = "iv";
+			ret = syscall(__NR_add_key, role, desc_iv, iv, sizeof(iv), KEY_SPEC_USER_KEYRING);
+
+			new_data->d_align = 1;
+			new_data->d_off = 0LL;
+			new_data->d_buf = crypted_text;
+			new_data->d_type = ELF_T_BYTE;
+			new_data->d_size = text_data->d_size + (AES_BLOCKLEN - text_data->d_size % AES_BLOCKLEN);
+			new_data->d_version = EV_CURRENT;
+
+			new_shdr = elf64_getshdr(new_scn);
+			new_shdr->sh_name = 1;
+			new_shdr->sh_type = SHT_PROGBITS;
+			new_shdr->sh_flags = SHF_WRITE | SHF_ALLOC;
+			new_shdr->sh_size = new_data->d_size;
+			new_shdr->sh_offset = stub_file_offset + stub_size;
+			new_shdr->sh_addr = data_vaddr;	//just base of addr
+			new_shdr->sh_addralign = 0;
+
+			crypted_offset = new_shdr->sh_offset + new_shdr->sh_addr - 1;
+
+			memset(text_data->d_buf, 0x00, text_data->d_size);
+
+			total_added_offset += new_shdr->sh_size;
 		}
 		else
 		{
@@ -254,11 +372,6 @@ int main(int argc, char* argv[])
 
 		if (!strcmp(section_name, ".shstrtab"))
 			new_ehdr->e_shstrndx = elf_ndxscn(new_scn);
-
-		if (!strcmp(section_name, ".text"))
-		{
-			entry_offset = old_shdr->sh_addr;
-		}
 	}
 
 	new_ehdr->e_shoff += total_added_offset;
@@ -269,41 +382,59 @@ int main(int argc, char* argv[])
 
 	shellcode_offset += sizeof(lea_rip);
 
-	/*if (entry_offset > 0xffffffff)
+	if (entry_offset > 0xffffffff)
 	{
-		PREPARE_MOV_X64(entry_offset);
-		memcpy(buf + shellcode_offset, mov_rax_64, sizeof(mov_rax_64));
-		shellcode_offset += sizeof(mov_rax_64);
+		PREPARE_FIRST_ARG_X64(entry_offset);
+		memcpy(buf + shellcode_offset, mov_rdi_64, sizeof(mov_rdi_64));
+		shellcode_offset += sizeof(mov_rdi_64);
 	}
 	else
 	{
-		PREPARE_MOV_X32(entry_offset);
-		memcpy(buf + shellcode_offset, mov_rax_32, sizeof(mov_rax_32));
-		shellcode_offset += sizeof(mov_rax_32);
+		PREPARE_FIRST_ARG_X32(entry_offset);
+		memcpy(buf + shellcode_offset, mov_rdi_32, sizeof(mov_rdi_32));
+		shellcode_offset += sizeof(mov_rdi_32);
 	}
-		
-	memcpy(buf + shellcode_offset, &push_rax, sizeof(push_rax));
 
-	shellcode_offset += sizeof(push_rax);
-	
-	if (stub_offset > 0xffffffff)
+	if (stub_mem_offset > 0xffffffff)
 	{
-		PREPARE_MOV_X64(stub_offset);
-		memcpy(buf + shellcode_offset, mov_rax_64, sizeof(mov_rax_64));
-		shellcode_offset += sizeof(mov_rax_64);
+		PREPARE_SECOND_ARG_X64(stub_mem_offset);
+		memcpy(buf + shellcode_offset, mov_rsi_64, sizeof(mov_rsi_64));
+		shellcode_offset += sizeof(mov_rsi_64);
 	}
 	else
 	{
-		PREPARE_MOV_X32(stub_offset);
-		memcpy(buf + shellcode_offset, mov_rax_32, sizeof(mov_rax_32));
-		shellcode_offset += sizeof(mov_rax_32);
+		PREPARE_SECOND_ARG_X32(stub_mem_offset);
+		memcpy(buf + shellcode_offset, mov_rsi_32, sizeof(mov_rsi_32));
+		shellcode_offset += sizeof(mov_rsi_32);
 	}
 
-	memcpy(buf + shellcode_offset, &push_rax, sizeof(push_rax));
+	if (crypted_offset > 0xffffffff)
+	{
+		PREPARE_THIRD_ARG_X64(crypted_offset);
+		memcpy(buf + shellcode_offset, mov_rcx_64, sizeof(mov_rcx_64));
+		shellcode_offset += sizeof(mov_rcx_64);
+	}
+	else
+	{
+		PREPARE_THIRD_ARG_X32(crypted_offset);
+		memcpy(buf + shellcode_offset, mov_rcx_32, sizeof(mov_rcx_32));
+		shellcode_offset += sizeof(mov_rcx_32);
+	}
 
-	shellcode_offset += sizeof(push_rax);*/
+	if (text_len > 0xffffffff)
+	{
+		PREPARE_FOURD_ARG_X64(text_len);
+		memcpy(buf + shellcode_offset, mov_r8_64, sizeof(mov_r8_64));
+		shellcode_offset += sizeof(mov_r8_64);
+	}
+	else
+	{
+		PREPARE_FOURD_ARG_X32(text_len);
+		memcpy(buf + shellcode_offset, mov_r8_32, sizeof(mov_r8_32));
+		shellcode_offset += sizeof(mov_r8_32);
+	}
 
-	memcpy(buf + shellcode_offset, data->d_buf, data->d_size);	
+	memcpy(buf + shellcode_offset, data->d_buf, data->d_size);
 
 	ret = elf_update(new_e, ELF_C_NULL);
 
@@ -313,7 +444,7 @@ int main(int argc, char* argv[])
 		//goto exit;
 	}
 
-	new_ehdr->e_entry = stub_offset;
+	new_ehdr->e_entry = stub_mem_offset;
 
 	new_scn = NULL;
 
