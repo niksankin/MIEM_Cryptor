@@ -86,6 +86,10 @@ unsigned char mov_rcx_32[] = { 0x48, 0xC7, 0xC1, 0x00, 0x00, 0x00, 0x00 };
 unsigned char mov_r8_64[] = { 0x49, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 unsigned char mov_r8_32[] = { 0x49, 0xC7, 0xC0, 0x00, 0x00, 0x00, 0x00 };
 
+unsigned char sub_rdx_8[] = { 0x48, 0x83, 0xea, 0x00};
+
+unsigned char push_regs[] = { 0x53, 0x51, 0x52, 0x56, 0x57};
+
 unsigned char push_rax = 0x50;
 
 #define PREPARE_FIRST_ARG_X64(num) memcpy(mov_rdi_64 + 2, &num, sizeof(uint64_t))
@@ -100,10 +104,20 @@ unsigned char push_rax = 0x50;
 #define PREPARE_FOURD_ARG_X64(num) memcpy(mov_r8_64 + 2, &num, sizeof(uint64_t))
 #define PREPARE_FOURD_ARG_X32(num) memcpy(mov_r8_32 + 3, &num, sizeof(uint32_t))
 
-#define PAYLOAD_MAX_SIZE sizeof(lea_rip) + sizeof(mov_rsi_64) + sizeof(mov_rdi_64) + sizeof(mov_rcx_64) + sizeof(mov_r8_64)
+#define PREPARE_SUB_RDX_X8(num) memcpy(sub_rdx_8 + 3, &num, sizeof(uint8_t))
+
+#define PAYLOAD_MAX_SIZE sizeof(lea_rip) + sizeof(push_regs) + sizeof(sub_rdx_8) + sizeof(mov_rsi_64) + sizeof(mov_rdi_64) + sizeof(mov_rcx_64) + sizeof(mov_r8_64)
 
 uint8_t iv[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
 uint8_t key[] = { 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
+
+void encryptDecrypt(char *input, int size_inp, char *key, int size_key) {
+
+	int i;
+	for (i = 0; i < size_inp; i++) {
+		input[i] = input[i] ^ key[i % (size_key / sizeof(char))];
+	}
+}
 
 int main(int argc, char* argv[])
 {
@@ -123,7 +137,7 @@ int main(int argc, char* argv[])
 	fd = open(argv[1], O_RDWR);
 
 	if (fd == -1)
-		perror("some shiett occured: ");
+		perror("Error: ");
 
 	elf_version(EV_CURRENT);
 
@@ -212,6 +226,8 @@ int main(int argc, char* argv[])
 	int crypted_text_len;
 	int text_len;
 
+	size_t bss_size;
+
 	//откроем файл со стабом и скопируем .text в буффер для секции
 	int stub_elf = open("stub_linux_amd64", O_RDWR);
 
@@ -267,25 +283,28 @@ int main(int argc, char* argv[])
 
 		if (!strcmp(section_name, ".text"))
 		{
-			entry_offset = old_shdr->sh_addr - sizeof(lea_rip);
+			entry_offset = old_shdr->sh_addr;
 			text_data = old_data;
 			text_len = old_data->d_size;
 		}
 
-		if (!strcmp(section_name, ".data"))
+		if (!strcmp(section_name, ".bss"))
 		{
 			new_shdr = elf64_getshdr(new_scn);
 
 			*new_shdr = *old_shdr;
 
 			if (new_shdr->sh_addr != 0)
-				new_shdr->sh_addr -= new_shdr->sh_offset - 1;
+				new_shdr->sh_addr -= new_shdr->sh_offset + (uint64_t)((new_shdr->sh_addralign - (uint64_t)(new_shdr->sh_offset % new_shdr->sh_addralign)) % new_shdr->sh_addralign) - 1;
+				//new_shdr->sh_addr -= new_shdr->sh_offset - 1;
 
 			new_shdr->sh_offset += total_added_offset;
 
 			size_t data_offset = new_shdr->sh_offset;
 			size_t data_size = new_shdr->sh_size;
 			size_t data_vaddr = new_shdr->sh_addr;
+
+			bss_size = data_size;
 
 			new_scn = elf_newscn(new_e);
 
@@ -305,7 +324,7 @@ int main(int argc, char* argv[])
 			new_shdr->sh_size = buf_size;
 			new_shdr->sh_offset = data_offset + data_size;
 			new_shdr->sh_addr = data_vaddr;	//just base of addr
-			new_shdr->sh_addralign = 0;
+			new_shdr->sh_addralign = 1;
 
 			total_added_offset += new_shdr->sh_size;
 
@@ -319,28 +338,29 @@ int main(int argc, char* argv[])
 
 			new_data = elf_newdata(new_scn);
 
+			crypted_text = calloc(text_data->d_size + (AES_BLOCKLEN - (size_t)(text_data->d_size % AES_BLOCKLEN)), sizeof(uint8_t));
+
+			memcpy(crypted_text, text_data->d_buf, text_data->d_size);
+
 			struct AES_ctx ctx;
 
 			AES_init_ctx_iv(&ctx, key, iv);
 
-			crypted_text = calloc(text_data->d_size + (AES_BLOCKLEN - text_data->d_size % AES_BLOCKLEN), sizeof(uint8_t));
-
-			memcpy(crypted_text, text_data->d_buf, text_data->d_size);
-
-			AES_CBC_encrypt_buffer(&ctx, crypted_text, text_data->d_size + (AES_BLOCKLEN - text_data->d_size % AES_BLOCKLEN));
-
+			AES_CBC_encrypt_buffer(&ctx, crypted_text, text_data->d_size + (AES_BLOCKLEN - (size_t)(text_data->d_size % AES_BLOCKLEN)));
+			
 			char role[] = "user";
 			char desc_key[] = "enc_key";
-			ret = syscall(__NR_add_key, role, desc_key, key, sizeof(key), KEY_SPEC_USER_KEYRING);
+			ret = syscall(__NR_add_key, role, desc_key, key, sizeof(key), KEY_SPEC_SESSION_KEYRING);
 
 			char desc_iv[] = "iv";
-			ret = syscall(__NR_add_key, role, desc_iv, iv, sizeof(iv), KEY_SPEC_USER_KEYRING);
+			ret = syscall(__NR_add_key, role, desc_iv, iv, sizeof(iv), KEY_SPEC_SESSION_KEYRING);
 
 			new_data->d_align = 1;
 			new_data->d_off = 0LL;
 			new_data->d_buf = crypted_text;
 			new_data->d_type = ELF_T_BYTE;
-			new_data->d_size = text_data->d_size + (AES_BLOCKLEN - text_data->d_size % AES_BLOCKLEN);
+			new_data->d_size = text_data->d_size + (AES_BLOCKLEN - (size_t)(text_data->d_size % AES_BLOCKLEN));
+			//new_data->d_size = text_data->d_size;
 			new_data->d_version = EV_CURRENT;
 
 			new_shdr = elf64_getshdr(new_scn);
@@ -350,7 +370,7 @@ int main(int argc, char* argv[])
 			new_shdr->sh_size = new_data->d_size;
 			new_shdr->sh_offset = stub_file_offset + stub_size;
 			new_shdr->sh_addr = data_vaddr;	//just base of addr
-			new_shdr->sh_addralign = 0;
+			new_shdr->sh_addralign = 1;
 
 			crypted_offset = new_shdr->sh_offset + new_shdr->sh_addr - 1;
 
@@ -365,7 +385,7 @@ int main(int argc, char* argv[])
 			*new_shdr = *old_shdr;
 
 			if (new_shdr->sh_addr != 0)
-				new_shdr->sh_addr -= new_shdr->sh_offset - 1;
+				new_shdr->sh_addr -= new_shdr->sh_offset + (uint64_t)((new_shdr->sh_addralign - (uint64_t)(new_shdr->sh_offset % new_shdr->sh_addralign)) % new_shdr->sh_addralign) - 1;
 
 			new_shdr->sh_offset += total_added_offset;
 		}
@@ -378,9 +398,21 @@ int main(int argc, char* argv[])
 
 	int shellcode_offset = 0;
 
-	memcpy(buf, lea_rip, sizeof(lea_rip));
+	memcpy(buf + shellcode_offset, push_regs, sizeof(push_regs));
+
+	shellcode_offset += sizeof(push_regs);
+
+	memcpy(buf + shellcode_offset, lea_rip, sizeof(lea_rip));
 
 	shellcode_offset += sizeof(lea_rip);
+
+	uint8_t lea_size = sizeof(lea_rip) + sizeof(push_regs);
+
+	PREPARE_SUB_RDX_X8(lea_size);
+
+	memcpy(buf + shellcode_offset, sub_rdx_8, sizeof(sub_rdx_8));
+
+	shellcode_offset += sizeof(sub_rdx_8);
 
 	if (entry_offset > 0xffffffff)
 	{
@@ -463,9 +495,9 @@ int main(int argc, char* argv[])
 		new_shdr = elf64_getshdr(new_scn);
 
 		char* section_name = (char*)(str_new_table_data->d_buf + new_shdr->sh_name);
-
+		
 		if (new_shdr->sh_addr != 0)
-			new_shdr->sh_addr += new_shdr->sh_offset - 1;
+			new_shdr->sh_addr += new_shdr->sh_offset + (uint64_t)((new_shdr->sh_addralign - (uint64_t)(new_shdr->sh_offset % new_shdr->sh_addralign)) % new_shdr->sh_addralign) - 1;
 	}
 
 	for (int i = 0; i < ehdr->e_phnum; ++i)
@@ -479,7 +511,8 @@ int main(int argc, char* argv[])
 			new_phdr[i].p_flags |= PF_W;
 
 		//если изменённая секция внутри
-		if (new_phdr[i].p_offset <= stub_file_offset && new_phdr[i].p_offset + new_phdr[i].p_filesz >= stub_file_offset)
+		if (new_phdr[i].p_offset <= stub_file_offset && ((new_phdr[i].p_offset + new_phdr[i].p_filesz >= stub_file_offset) ||
+			(new_phdr[i].p_offset + new_phdr[i].p_filesz + bss_size >= stub_file_offset)))
 		{
 			new_phdr[i].p_filesz += total_added_offset;
 			new_phdr[i].p_memsz += total_added_offset;
@@ -500,31 +533,6 @@ int main(int argc, char* argv[])
 
 	elf_end(stub_e);
 	close(stub_elf);
-
-	/*ret = elf_update(e, ELF_C_NULL);
-
-	if (ret == -1)
-	{
-		printf("1 elf_begin () failed: %s.", elf_errmsg(-1));
-		goto exit;
-	}
-
-	//printf("Add section %s\n", elf_strptr(e, ehdr.e_shstrndx, shdr.sh_name));
-
-	(void)elf_flagshdr(scn, ELF_C_SET, ELF_F_DIRTY);
-	(void)elf_flagscn(scn, ELF_C_SET, ELF_F_DIRTY);
-	(void)elf_flagdata(data, ELF_C_SET, ELF_F_DIRTY);
-	(void)elf_flagehdr(e, ELF_C_SET, ELF_F_DIRTY);
-	(void)elf_flagphdr(e, ELF_C_SET, ELF_F_DIRTY);
-	(void)elf_flagelf(e, ELF_C_SET, ELF_F_DIRTY);
-
-	ret = elf_update(e, ELF_C_WRITE);
-
-	if (ret == -1)
-	{
-		printf("2 elf_begin () failed: %s.", elf_errmsg(-1));
-		goto exit;
-	}*/
 
 exit:
 	elf_end(e);

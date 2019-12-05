@@ -29,11 +29,6 @@
 .text
 _start:
 	mov %rsp, %rbp
-	push %rbx
-	push %rcx
-	push %rdx
-	push %rsi
-	push %rdi
 	call get_oep 
 	pop %rdi
 	pop %rsi
