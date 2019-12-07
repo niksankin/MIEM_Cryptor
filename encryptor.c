@@ -13,6 +13,8 @@
 #include <unistd.h>
 #include <keyutils.h>
 
+#include "sha256.h"
+#include "pbkdf2.h"
 #include "aes.h"
 
 int add_name_to_str_table(Elf *e, char *name)
@@ -109,14 +111,27 @@ unsigned char push_rax = 0x50;
 #define PAYLOAD_MAX_SIZE sizeof(lea_rip) + sizeof(push_regs) + sizeof(sub_rdx_8) + sizeof(mov_rsi_64) + sizeof(mov_rdi_64) + sizeof(mov_rcx_64) + sizeof(mov_r8_64)
 
 uint8_t iv[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f };
-uint8_t key[] = { 0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c };
 
-void encryptDecrypt(char *input, int size_inp, char *key, int size_key) {
+#define PRF_SHA256_OUT_LEN 32
 
-	int i;
-	for (i = 0; i < size_inp; i++) {
-		input[i] = input[i] ^ key[i % (size_key / sizeof(char))];
-	}
+void PRF_sha256(const uint8_t *keyPtr, size_t keyLen,
+	const uint8_t *textPtr, size_t textLen,
+	uint8_t *randomPtr)
+{
+	SHA256_CTX ctx;
+
+	sha256_init(&ctx);
+
+	uint8_t* salted_data = calloc(keyLen + textLen, sizeof(uint8_t));
+
+	memcpy(salted_data, keyPtr, keyLen);
+	memcpy(salted_data + keyLen, textPtr, textLen);
+
+	sha256_update(&ctx, salted_data, keyLen + textLen);
+
+	sha256_final(&ctx, randomPtr);
+
+	free(salted_data);
 }
 
 int main(int argc, char* argv[])
@@ -133,6 +148,22 @@ int main(int argc, char* argv[])
 	Elf64_Shdr *str_table_shdr = NULL;
 	
 	int ret = 0;
+
+	//просим ввести пароль, генерируем ключ для AES
+
+	char passw[AES_KEYLEN];
+	uint8_t key[AES_KEYLEN];
+	char *salt = "somesalt";
+
+	printf("Please enter the passphrase: ");
+
+	fgets(passw, sizeof(passw), stdin);
+
+	strtok(passw, "\n");
+
+	pbkdf2(&PRF_sha256, PRF_SHA256_OUT_LEN, passw, strlen(passw), salt, strlen(salt), 4096, key, AES_KEYLEN);
+
+	//начинаем работу с бинарями
 
 	fd = open(argv[1], O_RDWR);
 
@@ -527,6 +558,9 @@ int main(int argc, char* argv[])
 	}
 
 	ret = elf_update(new_e, ELF_C_WRITE);
+
+	//free(buf);
+	//free(crypted_text);
 
 	(void)elf_end(new_e);
 	(void)close(new_fd);
